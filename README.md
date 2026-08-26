@@ -5,7 +5,7 @@
 A funder locks a native **GEN** grant in a contract. A creator delivers work milestone by milestone, submitting a single HTTPS evidence URL for each. Instead of a human gatekeeper, **GenLayer validators independently fetch the evidence and re-run an LLM judgement**, and a milestone only pays out when they *reach consensus* on both the verdict **and** a cryptographic digest of the evidence. Funds move under strict accounting invariants and a pull-payment model that no forged callback can subvert.
 
 - **Contract:** [`contracts/ai_venture_escrow.py`](contracts/ai_venture_escrow.py)
-- **Tests:** [`tests/direct/test_ai_venture_escrow.py`](tests/direct/test_ai_venture_escrow.py) — **15 / 15 passing**
+- **Tests:** [`tests/direct/test_ai_venture_escrow.py`](tests/direct/test_ai_venture_escrow.py) — **16 / 16 passing**
 - **Frontend:** [`frontend/`](frontend/) — Vite + React + `genlayer-js`
 
 ---
@@ -64,8 +64,10 @@ flowchart TD
     E -- "no" --> E
     E -- "yes" --> F["evaluate_and_release_milestone()<br/>one-shot, locks attempt"]
     F -- "MAJORITY_AGREE" --> G["APPROVED → creator claimable"]
-    F -- "MAJORITY_REJECT / error" --> H["REJECTED → funder reclaimable after buffer"]
-    G --> I["claim_funds() → native GEN transfer"]
+    F -- "MAJORITY_REJECT / terminal error" --> H["REJECTED → funder reclaimable after buffer"]
+    F -- "transient error (fetch/timeout)" --> L["revert → milestone stays PENDING, retriable"]
+    L -. "retry once infra recovers" .-> F
+    G --> I["claim_funds() → native GEN transfer (pending payout)"]
     H --> J["reclaim_rejected_milestone() → funder claimable"]
     J --> I
     C -. "deadline passes, never submitted" .-> K["reclaim_unsubmitted_milestone()"]
@@ -78,7 +80,7 @@ flowchart TD
 2. **Allocate.** The admin calls `add_milestone(id, description, required_proof, amount)`. Each tranche must be **backed by escrowed funds** and sets a submission deadline (`DEFAULT_SUBMISSION_TIMEOUT_SECONDS` = 30 days).
 3. **Submit.** The creator calls `submit_milestone_deliverable(id, https_url, description)` **exactly once**. This stamps `submitted_at` and opens a **dispute window** (`evaluation_available_at = submitted_at + dispute_timeout`, default 48h).
 4. **Evaluate.** After the dispute window, an evaluator calls `evaluate_and_release_milestone(id)`. This is **one-shot** (see §5) and runs the AI consensus (see §4).
-5. **Settle.** On `MAJORITY_AGREE` the tranche becomes claimable by the creator. On rejection/error it becomes reclaimable by the funder after a buffer. All payouts are **pull-based** (`claim_funds`).
+5. **Settle.** On `MAJORITY_AGREE` the tranche becomes claimable by the creator. On an explicit rejection or a terminal error it becomes reclaimable by the funder after a buffer. A **transient** fetch/timeout error instead reverts, leaving the milestone `PENDING` and retriable (see §5). All payouts are **pull-based** (`claim_funds`).
 
 ### Timeouts
 
@@ -136,7 +138,12 @@ Errors are prefixed so validators can agree on *failure* as well as success:
 ## 5. Security Model
 
 ### One-shot evaluation (anti-grinding)
-Before entering the nondeterministic block, `evaluate_and_release_milestone` **commits the lock**: it sets `evaluation_locked = True`, `evaluation_attempted = True`, and increments `evaluation_nonce`. A milestone's evaluation attempt is therefore **consumed even if the external fetch or consensus fails** — an attacker cannot repeatedly re-trigger evaluation to "reroll" for a favourable LLM draw. A consumed-but-failed milestone is marked `REJECTED` and becomes funder-reclaimable after the dispute buffer.
+Before entering the nondeterministic block, `evaluate_and_release_milestone` **commits the lock**: it sets `evaluation_locked = True`, `evaluation_attempted = True`, and increments `evaluation_nonce`. An attacker therefore cannot repeatedly re-trigger evaluation to "reroll" for a favourable LLM draw.
+
+Failure handling **distinguishes transient infrastructure errors from terminal outcomes** (steward hardening):
+
+- **Terminal** failures — an explicit `MAJORITY_REJECT`, a deterministic bad-evidence error (`[EXTERNAL]`), or malformed/invalid consensus output (`[LLM_ERROR]`) — **consume** the attempt: the milestone is marked `REJECTED` and becomes funder-reclaimable after the dispute buffer. This preserves anti-grinding: a rejected submission cannot be replayed.
+- **Transient** failures — an evidence fetch/timeout that raises `[TRANSIENT]` — **must not** permanently decide the payout. The handler **reverts the whole transaction**, which rolls back the lock, the attempt flag, and the nonce, leaving the milestone `PENDING` and re-evaluable once the infrastructure recovers. No decision was produced, so there is nothing to grind. Classification lives in the pure helper `_is_transient_failure`.
 
 ### Checks-Effects-Interactions (CEI)
 Every state transition writes **terminal status and all pool accounting first**, and only then emits the native transfer. Concretely:
@@ -222,7 +229,7 @@ Expected:
 15 passed
 ```
 
-The suite covers: exact-funding & role constraints, the decoupled deposit→milestone→claim lifecycle, dispute-timeout gating, approval/rejection/reclaim paths, one-shot enforcement, validator-replay rejection, external-failure consumption, and forged-callback protection.
+The suite covers: exact-funding & role constraints, the decoupled deposit→milestone→claim lifecycle, dispute-timeout gating, approval/rejection/reclaim paths, one-shot enforcement, validator-replay rejection, terminal-failure consumption (unexpected + malformed consensus), and forged-callback protection.
 
 ---
 

@@ -1119,6 +1119,39 @@ h2 em {
   margin-top: 16px;
 }
 
+.inline-amount-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.inline-amount-form .submit-button {
+  width: 100%;
+}
+
+.pending-note {
+  display: flex;
+  gap: 8px;
+  align-items: start;
+  margin-top: 14px;
+  padding: 10px 12px;
+  color: var(--muted);
+  background: #0d2428;
+  border: 1px solid var(--cyan-soft);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.pending-note svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--cyan);
+}
+
+.pending-note strong {
+  color: var(--text);
+}
+
 .empty-ledger {
   position: relative;
   display: grid;

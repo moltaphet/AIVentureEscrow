@@ -404,13 +404,48 @@ def test_validator_replay_rejects_different_decision(
     assert direct_vm.run_validator() is False
 
 
-def test_external_evaluation_failure_consumes_milestone(
+def test_unexpected_evaluation_failure_consumes_milestone(
+    direct_vm, direct_deploy, direct_bob, direct_charlie
+):
+    # An unclassified failure (here an unavailable evidence fetch surfaced by the
+    # test harness as a non-transient error) is terminal: the one-shot attempt is
+    # consumed so a rejected submission cannot be replayed for a favorable draw.
+    #
+    # NOTE ON THE TRANSIENT BRANCH: a genuine infrastructure outage raises
+    # gl.nondet.NondetException from web.render, which the contract tags with
+    # ERROR_TRANSIENT and reverts (leaving the milestone retriable). The direct
+    # harness cannot inject a NondetException into web.render (an unmocked page
+    # raises MockNotFoundError, not NondetException), so the transient-revert
+    # path is covered by _is_transient_failure classification and code review
+    # rather than an integration case here.
+    contract = deploy_escrow(direct_vm, direct_deploy, direct_bob, direct_charlie)
+    add_milestone(direct_vm, contract, direct_bob)
+    prepare_for_evaluation(direct_vm, contract, direct_charlie)
+
+    direct_vm.sender = direct_bob
+    assert contract.evaluate_and_release_milestone(1) == "MAJORITY_REJECT"
+    milestone = contract.get_milestone(1)
+    grant = contract.get_grant()
+    assert milestone["status"] == "REJECTED"
+    assert milestone["evaluation_attempted"] is True
+    assert grant["rejected_funds"] == TRANCHE
+
+
+def test_malformed_consensus_output_consumes_milestone(
     direct_vm, direct_deploy, direct_bob, direct_charlie
 ):
     contract = deploy_escrow(direct_vm, direct_deploy, direct_bob, direct_charlie)
     add_milestone(direct_vm, contract, direct_bob)
     prepare_for_evaluation(direct_vm, contract, direct_charlie)
 
+    # A reachable page with an invalid (non-transient) consensus decision is a
+    # terminal failure: the attempt is consumed so a rejected submission cannot
+    # be replayed for a more favorable nondeterministic draw.
+    direct_vm.mock_web(URL_PATTERN, {"status": 200, "body": "Dashboard release 1."})
+    direct_vm.mock_llm(
+        PROMPT_PATTERN,
+        json.dumps({"decision": "NOT_A_REAL_DECISION", "reason": "invalid"}),
+    )
     direct_vm.sender = direct_bob
     assert contract.evaluate_and_release_milestone(1) == "MAJORITY_REJECT"
     milestone = contract.get_milestone(1)

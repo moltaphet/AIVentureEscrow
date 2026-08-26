@@ -91,6 +91,7 @@ function normalizeGrant(raw: CalldataEncodable): Grant {
     funder: normalizeAddress(readValue(grant, "funder")),
     creator: normalizeAddress(readValue(grant, "creator")),
     totalGrantAmount: readBig(grant, "total_grant_amount"),
+    fundedAmount: readBig(grant, "funded_amount"),
     allocatedFunds: readBig(grant, "allocated_funds"),
     reservedFunds: readBig(grant, "reserved_funds"),
     releasedFunds: readBig(grant, "released_funds"),
@@ -354,6 +355,11 @@ export async function writeContract(
   onStage("submitted", textHash);
   await confirm(hash, textHash, onStage);
   return textHash;
+}
+
+export function depositGrant(amount: bigint, onStage: StageListener): Promise<string> {
+  // Value-bearing call: the attached native GEN funds the escrow after deploy.
+  return writeContract("deposit_grant", [], amount, onStage);
 }
 
 export function addMilestone(

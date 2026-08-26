@@ -6,6 +6,7 @@ export interface Grant {
   funder: string;
   creator: string;
   totalGrantAmount: bigint;
+  fundedAmount: bigint;
   allocatedFunds: bigint;
   reservedFunds: bigint;
   releasedFunds: bigint;

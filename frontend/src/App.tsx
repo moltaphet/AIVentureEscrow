@@ -8,7 +8,6 @@ import {
   ChevronDown,
   CircleAlert,
   CircleDollarSign,
-  ClipboardCheck,
   Code2,
   ExternalLink,
   FileCheck2,
@@ -35,6 +34,7 @@ import {
 import {
   addMilestone,
   claimFunds,
+  depositGrant,
   evaluateMilestone,
   getEscrowSnapshot,
   reclaimRejected,
@@ -183,6 +183,7 @@ function App() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [milestoneForm, setMilestoneForm] = useState({ id: "", description: "", proof: "", amount: "" });
   const [deliverableForm, setDeliverableForm] = useState({ id: "", url: "", description: "" });
+  const [depositForm, setDepositForm] = useState("");
   const [adminForm, setAdminForm] = useState("");
 
   const loadSnapshot = async () => {
@@ -211,7 +212,16 @@ function App() {
   const evaluateAuthorized = canEvaluate(snapshot, wallet.address);
   const claimAuthorized = canClaim(snapshot, wallet.address);
   const writesAllowed = Boolean(wallet.supportedChain && !grant?.paused && !txBusy);
+  const fundAuthorized = Boolean(grant && wallet.address && [grant.owner, grant.funder].includes(wallet.address));
   const unallocated = grant ? grant.totalGrantAmount - grant.allocatedFunds - grant.unallocatedReclaimedFunds : 0n;
+  const fundingRemaining = grant ? grant.totalGrantAmount - grant.fundedAmount : 0n;
+  const pendingPayout = grant
+    ? wallet.address === grant.creator
+      ? grant.creatorPendingPayout
+      : wallet.address === grant.funder
+        ? grant.funderPendingPayout
+        : 0n
+    : 0n;
 
   const progress = useMemo(() => {
     if (!grant || grant.totalGrantAmount === 0n) return 0;
@@ -262,6 +272,20 @@ function App() {
       setDeliverableForm({ id: "", url: "", description: "" });
     } catch (error) {
       setTx({ stage: "failed", action: "Submit deliverable", hash: "", error: errorText(error) });
+    }
+  };
+
+  const handleDeposit = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      const amount = parseGen(depositForm);
+      if (grant && amount > fundingRemaining) {
+        throw new Error("Deposit exceeds the remaining amount needed to fully fund the grant.");
+      }
+      await runAction("Deposit grant funds", (onStage) => depositGrant(amount, onStage));
+      setDepositForm("");
+    } catch (error) {
+      setTx({ stage: "failed", action: "Deposit grant funds", hash: "", error: errorText(error) });
     }
   };
 
@@ -324,7 +348,7 @@ function App() {
             <div className="rail-visual">
               <div className="rail-track"><span style={{ height: `${progress}%` }} /></div>
               <div className="rail-nodes">
-                <RailNode label="FUNDED" active={Boolean(grant?.totalGrantAmount)} value={grant ? `${formatGen(grant.totalGrantAmount)} GEN` : "Awaiting deployment"} />
+                <RailNode label="FUNDED" active={Boolean(grant?.fundedAmount)} value={grant ? `${formatGen(grant.fundedAmount)} / ${formatGen(grant.totalGrantAmount)} GEN` : "Awaiting deposit"} />
                 <RailNode label="ALLOCATED" active={Boolean(grant?.allocatedFunds)} value={grant ? `${formatGen(grant.allocatedFunds)} GEN` : "No milestones"} />
                 <RailNode label="RELEASED" active={Boolean(grant?.releasedFunds)} value={grant ? `${formatGen(grant.releasedFunds)} GEN` : "No settlements"} />
               </div>
@@ -334,10 +358,10 @@ function App() {
         </section>
 
         <section className="signal-strip section-wrap" aria-label="Escrow statistics">
-          <Stat label="Total grant" value={grant ? `${formatGen(grant.totalGrantAmount)} GEN` : "--"} icon={<CircleDollarSign size={18} />} />
+          <Stat label="Declared total" value={grant ? `${formatGen(grant.totalGrantAmount)} GEN` : "--"} icon={<CircleDollarSign size={18} />} />
+          <Stat label="Funded (deposited)" value={grant ? `${formatGen(grant.fundedAmount)} GEN` : "--"} icon={<ArrowDownToLine size={18} />} />
           <Stat label="In escrow" value={grant ? `${formatGen(grant.escrowedFunds)} GEN` : "--"} icon={<LockKeyhole size={18} />} />
           <Stat label="Released" value={grant ? `${formatGen(grant.releasedFunds)} GEN` : "--"} icon={<BadgeCheck size={18} />} />
-          <Stat label="Milestones" value={grant ? String(grant.milestoneCount).padStart(2, "0") : "--"} icon={<ClipboardCheck size={18} />} />
         </section>
 
         <section className="workspace section-wrap" id="workspace">
@@ -388,9 +412,19 @@ function App() {
                 <IdentityRow label="Owner" value={grant?.owner || "Not configured"} />
               </div>
               <div className="side-block balance-block">
+                <div className="side-label">Escrow funding</div>
+                <strong>{grant ? formatGen(grant.fundedAmount) : "0.00"}<small> / {grant ? formatGen(grant.totalGrantAmount) : "0.00"} GEN</small></strong>
+                <p>Native GEN actually deposited versus the declared grant total. Deposits are accepted until the escrow is fully funded.</p>
+                <form className="inline-amount-form" onSubmit={handleDeposit}>
+                  <input value={depositForm} onChange={(event) => setDepositForm(event.target.value)} placeholder={grant ? `Up to ${formatGen(fundingRemaining)} GEN` : "Amount in GEN"} inputMode="decimal" disabled={!fundAuthorized || !writesAllowed || !CONTRACT_ADDRESS || fundingRemaining <= 0n} />
+                  <button className="submit-button submit-cyan" type="submit" disabled={!fundAuthorized || !writesAllowed || !CONTRACT_ADDRESS || fundingRemaining <= 0n}><ArrowDownToLine size={15} />{grant && fundingRemaining <= 0n ? "Fully funded" : "Deposit grant"}</button>
+                </form>
+              </div>
+              <div className="side-block balance-block">
                 <div className="side-label">Available to claim</div>
                 <strong>{grant && wallet.address === grant.creator ? formatGen(grant.creatorClaimableFunds) : grant && wallet.address === grant.funder ? formatGen(grant.funderClaimableFunds) : "0.00"}<small> GEN</small></strong>
                 <p>Pull payments keep settlement separate from evaluation.</p>
+                {pendingPayout > 0n ? <div className="pending-note"><RefreshCw size={13} /><span><strong>{formatGen(pendingPayout)} GEN dispatched, pending settlement.</strong> Claimed funds are recorded on-chain as pending to your address. If a native send does not land, the entitlement is preserved by the escrow accounting: it is pending, not permanently failed.</span></div> : null}
                 <ActionButton icon={<HandCoins size={15} />} onClick={() => void runAction("Claim available funds", (onStage) => claimFunds(onStage))} disabled={!claimAuthorized || !writesAllowed || !grant || (wallet.address === grant.creator ? grant.creatorClaimableFunds <= 0n : grant.funderClaimableFunds <= 0n)} tone="cyan">Claim funds</ActionButton>
               </div>
               <div className="side-block">
@@ -550,5 +584,5 @@ const FAQS = [
   { question: "Why does review wait after submission?", answer: "A submission enters a dispute buffer before evaluation becomes available. This gives the funder a predictable observation window and makes the evaluation moment explicit on-chain." },
   { question: "What happens when validators reject the work?", answer: "The milestone becomes rejected and its tranche leaves the active reserve. After the reclaim buffer expires, the funder or owner can credit the amount back to the funder's claimable balance." },
   { question: "Can the creator evaluate their own work?", answer: "No. The contract explicitly rejects creator evaluation even when the creator also appears in another role. Evaluation is restricted to the owner, funder, or admin." },
-  { question: "How do payouts leave the contract?", answer: "Payouts are pull-based. Approval or reclaiming credits a claimable balance; the eligible creator or funder calls claim_funds. Failed native sends are restored through the contract error callback." },
+  { question: "How do payouts leave the contract?", answer: "Payouts are pull-based. Approval or reclaiming credits a claimable balance; the eligible creator or funder calls claim_funds, which moves the amount into a pending payout and dispatches native GEN. A pending payout is recorded on-chain to the recipient: if a native send does not land, the escrow accounting preserves the entitlement, so the payout stays pending rather than being permanently failed or silently restored." },
 ];

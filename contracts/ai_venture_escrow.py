@@ -302,6 +302,19 @@ def _valid_evaluation_result(result: object) -> bool:
     return True
 
 
+def _is_transient_failure(message: str) -> bool:
+    """Classify an evaluation failure as infrastructure/transient.
+
+    A transient failure (evidence page unavailable, network timeout, validator
+    transient error) produces no decision and is not attributable to the work.
+    The caller reverts on a transient failure so the one-shot evaluation is not
+    consumed and the milestone stays open for retry. Every other failure
+    (deterministic external error, malformed or invalid consensus output) is
+    terminal and consumes the attempt to block replay for a favorable draw.
+    """
+    return ERROR_TRANSIENT in (message or "")
+
+
 def _agree_on_error(leaders_result: gl.vm.Result, leader_fn) -> bool:
     leader_message = getattr(leaders_result, "message", "") or ""
     try:
@@ -758,10 +771,23 @@ class AIVentureEscrow(gl.Contract):
                 evidence_url,
                 deliverable_description,
             )
-        except Exception:
-            # The attempt is consumed even when external evidence or consensus
-            # fails. This makes transient or malformed evaluation results unable
-            # to reopen the same milestone for another favorable draw.
+        except Exception as error:
+            # Distinguish an infrastructure/transient failure (evidence page
+            # unavailable, network timeout, validator transient error) from an
+            # explicit milestone rejection. A transient failure produced no
+            # decision, so it must not consume the one-shot evaluation or reject
+            # the tranche. Re-raising reverts the whole transaction, rolling back
+            # the write-once lock, attempt flag, and nonce set above, which leaves
+            # the milestone PENDING and re-evaluable once infrastructure recovers.
+            message = getattr(error, "message", "") or str(error)
+            if _is_transient_failure(message):
+                raise gl.vm.UserError(
+                    ERROR_TRANSIENT
+                    + " evaluation could not reach the evidence; milestone stays open for retry"
+                )
+            # Deterministic external failures and malformed/invalid consensus are
+            # terminal: consuming the attempt here stops a rejected submission from
+            # being replayed for a more favorable nondeterministic draw.
             milestone.status = STATUS_REJECTED
             milestone.evaluation_locked = False
             milestone.evaluated_at = u256(current_time)
