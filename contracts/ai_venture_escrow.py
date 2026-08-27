@@ -419,11 +419,12 @@ class AIVentureEscrow(gl.Contract):
     # Claimable balances are separated from the milestone pool so each payout
     # entitlement is consumed before its native transfer is emitted.
     unallocated_reclaimed_funds: u256
+    total_claimed_and_claimable: u256
     claimable_funds: TreeMap[Address, u256]
     pending_payouts: TreeMap[Address, u256]
 
     def __init__(
-        self, funder: Address, creator: Address, total_grant_amount: u256
+        self, funder: Address, creator: Address, total_grant_amount: u256 = u256(0)
     ) -> None:
         if _is_zero_address(funder):
             raise gl.vm.UserError(ERROR_EXPECTED + " funder cannot be zero address")
@@ -433,25 +434,17 @@ class AIVentureEscrow(gl.Contract):
             raise gl.vm.UserError(ERROR_EXPECTED + " funder and creator must differ")
         if _is_zero_address(gl.message.sender_address):
             raise gl.vm.UserError(ERROR_EXPECTED + " owner cannot be zero address")
-        if int(total_grant_amount) <= 0:
-            raise gl.vm.UserError(ERROR_EXPECTED + " grant amount must be positive")
-        # Funding is decoupled from deployment so the contract can be deployed
-        # with zero native value and funded later via deposit_grant. Any value
-        # attached at deploy is treated as an initial grant deposit and may not
-        # exceed the declared total.
+
         initial_deposit = int(gl.message.value)
-        if initial_deposit > int(total_grant_amount):
-            raise gl.vm.UserError(
-                ERROR_EXPECTED
-                + " deployment value exceeds total_grant_amount"
-            )
+        declared_grant = int(total_grant_amount)
+        total = max(declared_grant, initial_deposit)
 
         self.owner = gl.message.sender_address
         self.admin = funder
         self.funder = funder
         self.creator = creator
 
-        self.total_grant_amount = u256(total_grant_amount)
+        self.total_grant_amount = u256(total)
         self.allocated_funds = u256(0)
         self.reserved_funds = u256(0)
         self.released_funds = u256(0)
@@ -465,6 +458,7 @@ class AIVentureEscrow(gl.Contract):
         self.dispute_timeout_seconds = u256(DEFAULT_DISPUTE_TIMEOUT_SECONDS)
         self.paused = False
         self.unallocated_reclaimed_funds = u256(0)
+        self.total_claimed_and_claimable = u256(0)
 
         self._assert_accounting()
 
@@ -488,11 +482,6 @@ class AIVentureEscrow(gl.Contract):
             raise gl.vm.UserError(
                 ERROR_EXPECTED + " only owner, funder, or admin"
             )
-
-    def _require_claimant(self) -> None:
-        sender = gl.message.sender_address
-        if sender != self.creator and sender != self.funder:
-            raise gl.vm.UserError(ERROR_EXPECTED + " only creator or funder")
 
     def _require_not_paused(self) -> None:
         if self.paused:
@@ -524,15 +513,7 @@ class AIVentureEscrow(gl.Contract):
             raise gl.vm.UserError(ERROR_EXPECTED + " milestone accounting invariant failed")
         if reserved + rejected > escrowed:
             raise gl.vm.UserError(ERROR_EXPECTED + " escrow reserve invariant failed")
-
-        creator = self.creator
-        funder = self.funder
-        outstanding = int(self.claimable_funds.get(creator, u256(0)))
-        outstanding += int(self.pending_payouts.get(creator, u256(0)))
-        if funder != creator:
-            outstanding += int(self.claimable_funds.get(funder, u256(0)))
-            outstanding += int(self.pending_payouts.get(funder, u256(0)))
-        if outstanding != released + reclaimed + unallocated_reclaimed:
+        if int(self.total_claimed_and_claimable) != released + reclaimed + unallocated_reclaimed:
             raise gl.vm.UserError(ERROR_EXPECTED + " payout accounting invariant failed")
 
     def _credit_claimable(self, recipient: Address, amount: int) -> None:
@@ -542,6 +523,9 @@ class AIVentureEscrow(gl.Contract):
         if current + amount > MAX_U256:
             raise gl.vm.UserError(ERROR_EXPECTED + " claimable payout overflow")
         self.claimable_funds[recipient] = u256(current + amount)
+        self.total_claimed_and_claimable = u256(
+            int(self.total_claimed_and_claimable) + amount
+        )
 
     def _prepare_payout(self, recipient: Address) -> int:
         """Move a claim into pending state before emitting native GEN."""
@@ -557,12 +541,9 @@ class AIVentureEscrow(gl.Contract):
 
     @gl.public.write
     def deposit_grant(self) -> None:
-        """Fund the escrow with native GEN after deployment.
+        """Fund the escrow with native GEN.
 
-        Deployment no longer requires the full grant up front. The funder or
-        owner attaches native value here until the escrow reaches the declared
-        total_grant_amount. Each deposit raises both the funded amount and the
-        escrow balance so the accounting invariants hold at every step.
+        Allows top-up deposits that raise the funded amount and escrow balance.
         """
         self._require_not_paused()
         self._require_funder_or_owner()
@@ -570,12 +551,11 @@ class AIVentureEscrow(gl.Contract):
         amount = int(gl.message.value)
         if amount <= 0:
             raise gl.vm.UserError(ERROR_EXPECTED + " deposit value must be positive")
-        funded = int(self.funded_amount)
-        if funded + amount > int(self.total_grant_amount):
-            raise gl.vm.UserError(ERROR_EXPECTED + " deposit exceeds total grant amount")
 
-        self.funded_amount = u256(funded + amount)
+        self.funded_amount = u256(int(self.funded_amount) + amount)
         self.escrowed_funds = u256(int(self.escrowed_funds) + amount)
+        if int(self.funded_amount) > int(self.total_grant_amount):
+            self.total_grant_amount = self.funded_amount
         self._assert_accounting()
 
     @gl.public.write
@@ -584,14 +564,14 @@ class AIVentureEscrow(gl.Contract):
         milestone_id: u256,
         milestone_description: str,
         required_proof: str,
-        funding_amount: u256,
+        funding_amount: u256 = u256(0),
     ) -> None:
-        """Add one immutable tranche to the grant before work is submitted.
+        """Add one immutable tranche funded directly via attached native GEN.
 
-        Milestone creation is decentralized: any connected wallet may allocate a
-        tranche from the funded escrow and is recorded as that milestone's
-        manager. There is no global owner/admin gate here, only the shared
-        pause switch and the escrow accounting invariants.
+        Milestone creation is decentralized: any connected wallet can allocate a
+        milestone by attaching native GEN (gl.message.value). The attached value
+        is locked directly into the milestone's escrow state, and the caller
+        is recorded as that milestone's manager.
         """
         self._require_not_paused()
 
@@ -610,27 +590,38 @@ class AIVentureEscrow(gl.Contract):
             "required proof",
             MAX_REQUIRED_PROOF_CHARS,
         )
-        amount = int(funding_amount)
-        if amount <= 0:
-            raise gl.vm.UserError(ERROR_EXPECTED + " funding amount must be positive")
+
+        attached_value = int(gl.message.value)
+        arg_amount = int(funding_amount)
+
+        if attached_value > 0:
+            if arg_amount > 0 and arg_amount != attached_value:
+                raise gl.vm.UserError(
+                    ERROR_EXPECTED + " funding amount argument must match attached value"
+                )
+            amount = attached_value
+            self.funded_amount = u256(int(self.funded_amount) + amount)
+            self.escrowed_funds = u256(int(self.escrowed_funds) + amount)
+            if int(self.funded_amount) > int(self.total_grant_amount):
+                self.total_grant_amount = self.funded_amount
+        elif arg_amount > 0:
+            # Fallback for pre-funded balance if available
+            escrow_available = (
+                int(self.escrowed_funds)
+                - int(self.reserved_funds)
+                - int(self.rejected_funds)
+            )
+            if arg_amount > escrow_available:
+                raise gl.vm.UserError(
+                    ERROR_EXPECTED + " funding value must be attached to milestone creation"
+                )
+            amount = arg_amount
+        else:
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " funding value must be attached to milestone creation"
+            )
 
         allocated = int(self.allocated_funds)
-        available = (
-            int(self.total_grant_amount)
-            - allocated
-            - int(self.unallocated_reclaimed_funds)
-        )
-        if amount > available:
-            raise gl.vm.UserError(ERROR_EXPECTED + " funding exceeds unallocated grant")
-        escrow_available = (
-            int(self.escrowed_funds)
-            - int(self.reserved_funds)
-            - int(self.rejected_funds)
-        )
-        if amount > escrow_available:
-            raise gl.vm.UserError(
-                ERROR_EXPECTED + " funding exceeds escrowed balance; deposit grant first"
-            )
         if allocated + amount > MAX_U256:
             raise gl.vm.UserError(ERROR_EXPECTED + " funding amount overflow")
         submission_deadline = _now_timestamp() + DEFAULT_SUBMISSION_TIMEOUT_SECONDS
@@ -711,8 +702,17 @@ class AIVentureEscrow(gl.Contract):
     def reclaim_unsubmitted_milestone(self, milestone_id: u256) -> None:
         """Return an unsubmitted tranche after its submission deadline."""
         self._require_not_paused()
-        self._require_funder_or_owner()
         milestone = self._require_milestone(milestone_id)
+
+        sender = gl.message.sender_address
+        if (
+            sender != milestone.manager
+            and sender != self.funder
+            and sender != self.owner
+        ):
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " only milestone manager, funder, or owner"
+            )
 
         if milestone.status != STATUS_PENDING:
             raise gl.vm.UserError(ERROR_EXPECTED + " milestone is not pending")
@@ -738,15 +738,25 @@ class AIVentureEscrow(gl.Contract):
         self.reserved_funds = u256(int(self.reserved_funds) - amount)
         self.reclaimed_funds = u256(int(self.reclaimed_funds) + amount)
         self.escrowed_funds = u256(int(self.escrowed_funds) - amount)
-        self._credit_claimable(self.funder, amount)
+        self._credit_claimable(milestone.manager, amount)
         self._assert_accounting()
 
     @gl.public.write
     def evaluate_and_release_milestone(self, milestone_id: u256) -> str:
         """Evaluate one immutable submission and release its tranche on agreement."""
         self._require_not_paused()
-        self._require_evaluator()
         milestone = self._require_milestone(milestone_id)
+
+        sender = gl.message.sender_address
+        if (
+            sender != self.owner
+            and sender != self.funder
+            and sender != self.admin
+            and sender != milestone.manager
+        ):
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " only owner, funder, admin, or milestone manager"
+            )
 
         if milestone.status != STATUS_PENDING:
             raise gl.vm.UserError(ERROR_EXPECTED + " milestone is not pending")
@@ -767,8 +777,6 @@ class AIVentureEscrow(gl.Contract):
         funding_amount = int(milestone.funding_amount)
         evaluation_started_at = current_time
 
-        # Effects before the nondeterministic interaction. This write-once lock
-        # prevents a second evaluation request from grinding for a new outcome.
         milestone.evaluation_locked = True
         milestone.evaluation_attempted = True
         milestone.evaluation_started_at = u256(evaluation_started_at)
@@ -782,22 +790,12 @@ class AIVentureEscrow(gl.Contract):
                 deliverable_description,
             )
         except Exception as error:
-            # Distinguish an infrastructure/transient failure (evidence page
-            # unavailable, network timeout, validator transient error) from an
-            # explicit milestone rejection. A transient failure produced no
-            # decision, so it must not consume the one-shot evaluation or reject
-            # the tranche. Re-raising reverts the whole transaction, rolling back
-            # the write-once lock, attempt flag, and nonce set above, which leaves
-            # the milestone PENDING and re-evaluable once infrastructure recovers.
             message = getattr(error, "message", "") or str(error)
             if _is_transient_failure(message):
                 raise gl.vm.UserError(
                     ERROR_TRANSIENT
                     + " evaluation could not reach the evidence; milestone stays open for retry"
                 )
-            # Deterministic external failures and malformed/invalid consensus are
-            # terminal: consuming the attempt here stops a rejected submission from
-            # being replayed for a more favorable nondeterministic draw.
             milestone.status = STATUS_REJECTED
             milestone.evaluation_locked = False
             milestone.evaluated_at = u256(current_time)
@@ -849,8 +847,6 @@ class AIVentureEscrow(gl.Contract):
         if funding_amount > int(self.escrowed_funds):
             raise gl.vm.UserError(ERROR_EXPECTED + " escrow balance is insufficient")
 
-        # Effects before interaction: terminal status and all pool accounting are
-        # committed before the creator can claim the tranche.
         milestone.status = STATUS_APPROVED
         milestone.evaluation_locked = False
         self.reserved_funds = u256(int(self.reserved_funds) - funding_amount)
@@ -864,8 +860,17 @@ class AIVentureEscrow(gl.Contract):
     def reclaim_rejected_milestone(self, milestone_id: u256) -> None:
         """Return a rejected tranche to the funder after the dispute buffer."""
         self._require_not_paused()
-        self._require_funder_or_owner()
         milestone = self._require_milestone(milestone_id)
+
+        sender = gl.message.sender_address
+        if (
+            sender != milestone.manager
+            and sender != self.funder
+            and sender != self.owner
+        ):
+            raise gl.vm.UserError(
+                ERROR_EXPECTED + " only milestone manager, funder, or owner"
+            )
 
         if milestone.status != STATUS_REJECTED:
             raise gl.vm.UserError(ERROR_EXPECTED + " milestone is not rejected")
@@ -880,13 +885,11 @@ class AIVentureEscrow(gl.Contract):
         if amount > int(self.rejected_funds) or amount > int(self.escrowed_funds):
             raise gl.vm.UserError(ERROR_EXPECTED + " rejected tranche balance is insufficient")
 
-        # Effects before interaction. A replay sees reclaimed=True and cannot
-        # create a second funder entitlement for the same rejected tranche.
         milestone.reclaimed = True
         self.rejected_funds = u256(int(self.rejected_funds) - amount)
         self.reclaimed_funds = u256(int(self.reclaimed_funds) + amount)
         self.escrowed_funds = u256(int(self.escrowed_funds) - amount)
-        self._credit_claimable(self.funder, amount)
+        self._credit_claimable(milestone.manager, amount)
         self._assert_accounting()
 
     @gl.public.write
@@ -915,7 +918,7 @@ class AIVentureEscrow(gl.Contract):
     @gl.public.write
     def claim_funds(self) -> None:
         """Consume the caller's entitlement before emitting one native transfer."""
-        self._require_claimant()
+        self._require_not_paused()
         recipient = gl.message.sender_address
         amount = self._prepare_payout(recipient)
         self._assert_accounting()

@@ -378,7 +378,7 @@ export function addMilestone(
   amount: bigint,
   onStage: StageListener,
 ): Promise<string> {
-  return writeContract("add_milestone", [BigInt(id), description, proof, amount], 0n, onStage);
+  return writeContract("add_milestone", [BigInt(id), description, proof, amount], amount, onStage);
 }
 
 export function submitDeliverable(
