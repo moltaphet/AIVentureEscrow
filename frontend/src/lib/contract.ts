@@ -16,6 +16,7 @@ import {
   RPC_OVERRIDE,
 } from "../config";
 import type { EscrowSnapshot, Grant, Milestone, TransactionStage } from "../types";
+import { installSafeProvider } from "./provider";
 
 type Client = ReturnType<typeof createClient>;
 type ClientConfig = NonNullable<Parameters<typeof createClient>[0]>;
@@ -210,6 +211,10 @@ async function ensureWalletChain(provider: EthereumProvider): Promise<void> {
 }
 
 export async function connectWallet(): Promise<string> {
+  // Guard the global provider before genlayer-js probes optional Snaps methods
+  // (wallet_getSnaps / wallet_requestSnaps) during connect. Without this, a
+  // wallet lacking Snaps support rejects those probes and breaks the flow.
+  installSafeProvider();
   const provider = window.ethereum as EthereumProvider | undefined;
   if (!provider) throw new Error("Install an EIP-1193 wallet to connect to GenLayer.");
 
@@ -232,6 +237,9 @@ export async function connectWallet(): Promise<string> {
 }
 
 export async function initializeWallet(address: string): Promise<void> {
+  // Same Snaps-probe guard as connectWallet: reconnecting an existing session
+  // re-runs genlayer-js connect(), which probes wallet_getSnaps.
+  installSafeProvider();
   const provider = window.ethereum as EthereumProvider | undefined;
   if (!provider) return;
   writeClient = createClient({
