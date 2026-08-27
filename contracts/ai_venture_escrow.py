@@ -539,7 +539,7 @@ class AIVentureEscrow(gl.Contract):
         self.pending_payouts[recipient] = u256(pending + amount)
         return amount
 
-    @gl.public.write
+    @gl.public.write.payable
     def deposit_grant(self) -> None:
         """Fund the escrow with native GEN.
 
@@ -558,7 +558,7 @@ class AIVentureEscrow(gl.Contract):
             self.total_grant_amount = self.funded_amount
         self._assert_accounting()
 
-    @gl.public.write
+    @gl.public.write.payable
     def add_milestone(
         self,
         milestone_id: u256,
