@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { CHAIN_ID } from "../config";
+import { stringifyError } from "../lib/errors";
 import {
   connectWallet,
   connectedAddress,
@@ -31,7 +32,7 @@ export function useWallet() {
       const state = await readWalletState(nextAddress);
       setWallet({ address: nextAddress.toLowerCase(), ...state });
     } catch (readError) {
-      setError(readError instanceof Error ? readError.message : String(readError));
+      setError(stringifyError(readError));
     }
   }, []);
 
@@ -42,8 +43,7 @@ export function useWallet() {
       const address = await connectWallet();
       await refresh(address);
     } catch (connectError) {
-      const message = connectError instanceof Error ? connectError.message : String(connectError);
-      setError(message);
+      setError(stringifyError(connectError));
       throw connectError;
     } finally {
       setConnecting(false);

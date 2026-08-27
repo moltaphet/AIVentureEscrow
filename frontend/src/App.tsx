@@ -46,6 +46,7 @@ import {
   type StageListener,
 } from "./lib/contract";
 import { CHAIN_ID, CONTRACT_ADDRESS, DEPLOYMENT_STATUS, EXPLORER_URL, NETWORK_LABEL } from "./config";
+import { stringifyError } from "./lib/errors";
 import { useWallet } from "./hooks/useWallet";
 import type { EscrowSnapshot, Milestone, TransactionState } from "./types";
 
@@ -89,8 +90,7 @@ function remainingTime(timestamp: number): string {
 }
 
 function errorText(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^.*\[(EXPECTED|EXTERNAL|TRANSIENT|LLM_ERROR)\]\s*/, "").slice(0, 420);
+  return stringifyError(error).replace(/^.*\[(EXPECTED|EXTERNAL|TRANSIENT|LLM_ERROR)\]\s*/, "").slice(0, 420);
 }
 
 function isAddress(value: string): boolean {
