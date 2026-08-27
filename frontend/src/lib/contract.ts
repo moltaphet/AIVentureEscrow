@@ -132,6 +132,7 @@ function normalizeMilestone(raw: CalldataEncodable): Milestone {
     decision: readString(milestone, "decision"),
     decisionReason: readString(milestone, "decision_reason"),
     evidenceDigest: readString(milestone, "evidence_digest"),
+    manager: normalizeAddress(readValue(milestone, "manager")),
   };
 }
 

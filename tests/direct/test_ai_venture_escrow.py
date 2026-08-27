@@ -159,21 +159,23 @@ def test_constructor_records_roles_and_balance(
     assert grant["escrowed_funds"] == TOTAL
 
 
-def test_admin_allocates_tranche_and_only_creator_can_submit(
+def test_any_user_allocates_tranche_and_only_creator_can_submit(
     direct_vm, direct_deploy, direct_bob, direct_charlie
 ):
     contract = deploy_escrow(direct_vm, direct_deploy, direct_bob, direct_charlie)
 
-    direct_vm.sender = direct_charlie
-    with direct_vm.expect_revert("only owner or admin"):
-        contract.add_milestone(1, "Ship dashboard", "Public release URL", TRANCHE)
-
-    add_milestone(direct_vm, contract, direct_bob)
+    # Milestone creation is decentralized: the creator (a non-admin wallet) may
+    # allocate a tranche and is recorded as that milestone's manager.
+    add_milestone(direct_vm, contract, direct_charlie)
     accounting = contract.get_grant()
     assert accounting["allocated_funds"] == TRANCHE
     assert accounting["reserved_funds"] == TRANCHE
     assert accounting["escrowed_funds"] == TOTAL
     assert contract.get_milestone_ids() == [1]
+    assert (
+        contract.get_milestone(1)["manager"].lower()
+        == address_hex(direct_charlie).lower()
+    )
 
     direct_vm.sender = direct_bob
     with direct_vm.expect_revert("only creator can submit"):
@@ -191,6 +193,30 @@ def test_admin_allocates_tranche_and_only_creator_can_submit(
     warp_to(direct_vm, milestone["evaluation_available_at"] + 1)
     with direct_vm.expect_revert("only owner, funder, or admin"):
         contract.evaluate_and_release_milestone(1)
+
+
+def test_unprivileged_wallet_can_allocate_and_becomes_manager(
+    direct_vm, direct_deploy, direct_bob, direct_charlie, direct_alice
+):
+    # Alice holds no global role (she is neither owner, funder, admin, nor
+    # creator), yet she can still allocate a tranche and is recorded as its
+    # manager. This is the decentralized creation path the steward exercises.
+    contract = deploy_escrow(direct_vm, direct_deploy, direct_bob, direct_charlie)
+
+    direct_vm.sender = direct_alice
+    contract.add_milestone(
+        7,
+        "Ship the escrow dashboard",
+        "Public URL must show the deployed dashboard and release notes",
+        TRANCHE,
+    )
+
+    assert contract.get_milestone_ids() == [7]
+    milestone = contract.get_milestone(7)
+    assert milestone["manager"].lower() == address_hex(direct_alice).lower()
+    accounting = contract.get_grant()
+    assert accounting["allocated_funds"] == TRANCHE
+    assert accounting["reserved_funds"] == TRANCHE
 
 
 def test_evaluation_waits_for_timeout_and_approval_releases_tranche(

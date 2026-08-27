@@ -43,6 +43,7 @@ export interface Milestone {
   decision: string;
   decisionReason: string;
   evidenceDigest: string;
+  manager: string;
 }
 
 export interface EscrowSnapshot {

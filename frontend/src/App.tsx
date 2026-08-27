@@ -206,7 +206,10 @@ function App() {
   const grant = snapshot?.grant;
   const role = roleFor(snapshot, wallet.address);
   const txBusy = tx.stage === "signing" || tx.stage === "submitted" || tx.stage === "accepted";
-  const adminAuthorized = Boolean(grant && wallet.address && [grant.owner, grant.admin].includes(wallet.address));
+  // Milestone creation is decentralized on-chain: any connected wallet may
+  // allocate a tranche and becomes that milestone's manager. The allocation
+  // form is therefore gated only on having a connected wallet, not on a role.
+  const allocateAuthorized = Boolean(wallet.address);
   const ownerAuthorized = Boolean(grant && wallet.address && grant.owner === wallet.address);
   const reclaimAuthorized = canReclaim(snapshot, wallet.address);
   const evaluateAuthorized = canEvaluate(snapshot, wallet.address);
@@ -441,14 +444,14 @@ function App() {
           <div className="section-heading compact"><div><div className="eyebrow"><span className="eyebrow-line" />CONTROL SURFACE</div><h2>Move the work forward</h2></div><span className="section-note">Role: {role}</span></div>
           <div className="form-grid">
             <form className="operation-form" onSubmit={handleAddMilestone}>
-              <div className="form-title"><span className="form-icon"><Plus size={17} /></span><div><h3>Allocate a tranche</h3><p>Owner or admin defines the immutable milestone gate.</p></div></div>
+              <div className="form-title"><span className="form-icon"><Plus size={17} /></span><div><h3>Allocate a tranche</h3><p>Any connected wallet defines an immutable milestone and manages it.</p></div></div>
               <div className="two-fields">
                 <Field label="Milestone ID"><input value={milestoneForm.id} onChange={(event) => setMilestoneForm({ ...milestoneForm, id: event.target.value })} placeholder={String((grant?.milestoneCount || 0) + 1)} inputMode="numeric" /></Field>
                 <Field label="Funding amount" hint="Native GEN"><input value={milestoneForm.amount} onChange={(event) => setMilestoneForm({ ...milestoneForm, amount: event.target.value })} placeholder="10.00" inputMode="decimal" /></Field>
               </div>
               <Field label="Milestone description"><textarea value={milestoneForm.description} onChange={(event) => setMilestoneForm({ ...milestoneForm, description: event.target.value })} placeholder="What must be true when this tranche is complete?" rows={3} /></Field>
               <Field label="Required proof"><textarea value={milestoneForm.proof} onChange={(event) => setMilestoneForm({ ...milestoneForm, proof: event.target.value })} placeholder="Link, artifact, or acceptance criteria validators should inspect." rows={3} /></Field>
-              <button className="submit-button" type="submit" disabled={!adminAuthorized || !writesAllowed || !CONTRACT_ADDRESS}><Plus size={16} />Allocate milestone</button>
+              <button className="submit-button" type="submit" disabled={!allocateAuthorized || !writesAllowed || !CONTRACT_ADDRESS}><Plus size={16} />Allocate milestone</button>
             </form>
 
             <form className="operation-form" onSubmit={handleSubmitDeliverable}>

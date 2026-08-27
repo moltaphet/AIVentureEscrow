@@ -82,6 +82,10 @@ class Milestone:
     decision_reason: str
     evidence_digest: str
     submission_deadline: u256
+    # Wallet that allocated this tranche. Milestone creation is decentralized:
+    # whoever calls add_milestone becomes the manager of that specific
+    # milestone, independent of the global owner/admin roles.
+    manager: Address
 
 
 def _now_timestamp() -> int:
@@ -582,9 +586,14 @@ class AIVentureEscrow(gl.Contract):
         required_proof: str,
         funding_amount: u256,
     ) -> None:
-        """Add one immutable tranche to the grant before work is submitted."""
+        """Add one immutable tranche to the grant before work is submitted.
+
+        Milestone creation is decentralized: any connected wallet may allocate a
+        tranche from the funded escrow and is recorded as that milestone's
+        manager. There is no global owner/admin gate here, only the shared
+        pause switch and the escrow accounting invariants.
+        """
         self._require_not_paused()
-        self._require_admin()
 
         if milestone_id == u256(0):
             raise gl.vm.UserError(ERROR_EXPECTED + " milestone id must be positive")
@@ -648,6 +657,7 @@ class AIVentureEscrow(gl.Contract):
             decision_reason="",
             evidence_digest="",
             submission_deadline=u256(submission_deadline),
+            manager=gl.message.sender_address,
         )
         self.milestone_ids.append(u256(milestone_id))
         self.milestone_count = u256(int(self.milestone_count) + 1)
@@ -1001,6 +1011,7 @@ class AIVentureEscrow(gl.Contract):
             "decision": str(milestone.decision),
             "decision_reason": str(milestone.decision_reason),
             "evidence_digest": str(milestone.evidence_digest),
+            "manager": milestone.manager.as_hex,
         }
 
     @gl.public.view
